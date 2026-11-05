@@ -31,7 +31,7 @@ const randInt = (min, max) => Math.floor(rand(min, max + 1));
 
 // ── Bullet ────────────────────────────────────────────────────────────────────
 class Bullet {
-  constructor(x, y, angle) {
+  constructor(x, y, angle, friendly = true) {
     this.x = x;
     this.y = y;
     const SPEED = 520;
@@ -39,6 +39,8 @@ class Bullet {
     this.vy = Math.sin(angle) * SPEED;
     this.ttl  = 1.1;
     this.radius = 2;
+    this.friendly = friendly;   // true: nave/reflejada · false: enemiga
+    this.reflected = false;     // true: rebotó en el escudo
     this.dead = false;
   }
 
@@ -50,7 +52,7 @@ class Bullet {
   }
 
   draw() {
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = this.reflected ? '#b6f' : (this.friendly ? '#fff' : '#f66');
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
     ctx.fill();
@@ -77,6 +79,9 @@ class Asteroid {
     this.rotSpeed = rand(-1.2, 1.2);
     this.rot = rand(0, Math.PI * 2);
 
+    // Los asteroides grandes disparan contra la nave
+    this.shootTimer = size === 3 ? rand(2, 4) : 0;
+
     // Polígono irregular
     const n = randInt(8, 13);
     this.verts = [];
@@ -91,6 +96,7 @@ class Asteroid {
     this.x   = wrap(this.x + this.vx * dt, W);
     this.y   = wrap(this.y + this.vy * dt, H);
     this.rot += this.rotSpeed * dt;
+    if (this.shootTimer > 0) this.shootTimer -= dt;
   }
 
   split() {
@@ -242,6 +248,7 @@ class Ship {
     this.shootCooldown = 0;
     this.speedTimer    = 0;   // power-up velocidad activo (s)
     this.tripleTimer   = 0;   // power-up triple shot activo (s)
+    this.shieldTimer   = 0;   // power-up escudo activo (s)
     this.dead          = false;
   }
 
@@ -251,6 +258,7 @@ class Ship {
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
     if (this.speedTimer    > 0) this.speedTimer    -= dt;
     if (this.tripleTimer   > 0) this.tripleTimer   -= dt;
+    if (this.shieldTimer   > 0) this.shieldTimer   -= dt;
 
     const ROT   = 3.5;   // rad/s
     const THRUST = this.speedTimer > 0 ? 520 : 260;  // px/s² (x2 con velocidad)
@@ -324,6 +332,21 @@ class Ship {
     }
 
     ctx.restore();
+
+    // Burbuja del escudo (no rota con la nave)
+    if (this.shieldTimer > 0) {
+      const pulse = 1 + Math.sin(performance.now() / 150) * 0.05;
+      const r = (this.radius + 10) * pulse;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(187, 102, 255, 0.9)';
+      ctx.fillStyle   = 'rgba(187, 102, 255, 0.15)';
+      ctx.lineWidth   = 2;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 }
 
@@ -364,7 +387,7 @@ class PowerUp {
   constructor(x, y, type = 'speed') {
     this.x = x;
     this.y = y;
-    this.type = type;    // 'speed' | 'triple'
+    this.type = type;   // 'speed' | 'triple' | 'shield'
     this.radius = 14;
     this.ttl  = 8;    // vida en el mapa (s)
     this.dead = false;
@@ -386,7 +409,7 @@ class PowerUp {
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.scale(pulse, pulse);
-    ctx.strokeStyle = isTriple ? '#f6a' : '#6cf';
+    ctx.strokeStyle = isTriple ? '#f6a' : (this.type === 'shield' ? '#b6f' : '#6cf');
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
@@ -412,6 +435,15 @@ class PowerUp {
         ctx.moveTo(0, 4);
         ctx.lineTo(Math.cos(a) * 6, Math.sin(a) * 6 + 1);
       }
+      ctx.stroke();
+    } else if (this.type === 'shield') {
+      // Arco de escudo
+      ctx.beginPath();
+      ctx.arc(0, 0, 7, Math.PI * 0.2, Math.PI * 0.8, true);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, -7);
+      ctx.lineTo(0, 7);
       ctx.stroke();
     } else {
       // Rayo (chevron »)
@@ -456,7 +488,8 @@ function spawnPowerUp() {
     x = rand(0, W);
     y = rand(0, H);
   } while (dist({ x, y }, ship) < SAFE_DIST);
-  powerUps.push(new PowerUp(x, y, Math.random() < 0.5 ? 'speed' : 'triple'));
+  const type = ['speed', 'triple', 'shield'][Math.floor(Math.random() * 3)];
+  powerUps.push(new PowerUp(x, y, type));
 }
 
 function spawnShootingStar() {
@@ -539,6 +572,15 @@ function update(dt) {
     bullets.push(...ship.tryShoot());
   }
 
+  // Asteroides grandes disparan contra la nave
+  for (const a of asteroids) {
+    if (a.size === 3 && a.shootTimer <= 0) {
+      a.shootTimer = rand(3, 5);
+      const angle = Math.atan2(ship.y - a.y, ship.x - a.x) + rand(-0.15, 0.15);
+      bullets.push(new Bullet(a.x, a.y, angle, false));
+    }
+  }
+
   ship.update(dt);
   bullets.forEach(b => b.update(dt));
   asteroids.forEach(a => a.update(dt));
@@ -565,9 +607,10 @@ function update(dt) {
     spawnShootingStar();
   }
 
-  // Bala vs asteroide
+  // Bala vs asteroide (solo balas amigas)
   const newAsteroids = [];
   for (const b of bullets) {
+    if (!b.friendly) continue;
     for (const a of asteroids) {
       if (!a.dead && !b.dead && dist(b, a) < a.radius) {
         b.dead = true;
@@ -581,8 +624,9 @@ function update(dt) {
   asteroids = asteroids.filter(a => !a.dead).concat(newAsteroids);
   bullets   = bullets.filter(b => !b.dead);
 
-  // Bala vs estrella fugaz
+  // Bala vs estrella fugaz (solo balas amigas)
   for (const b of bullets) {
+    if (!b.friendly) continue;
     for (const s of shootingStars) {
       if (!s.dead && !b.dead && dist(b, s) < s.radius) {
         b.dead = true;
@@ -595,8 +639,45 @@ function update(dt) {
   bullets       = bullets.filter(b => !b.dead);
   shootingStars = shootingStars.filter(s => !s.dead);
 
-  // Nave vs asteroide / estrella fugaz
+  // Bala enemiga vs escudo → rebota y se vuelve amiga
+  const SHIELD_R = ship.radius + 10;
+  for (const b of bullets) {
+    if (b.friendly || b.dead || ship.dead) continue;
+    const d = dist(b, ship);
+    if (d < SHIELD_R && ship.shieldTimer > 0) {
+      // Normal unitaria desde el centro de la nave a la bala
+      let nx = (b.x - ship.x) / (d || 1);
+      let ny = (b.y - ship.y) / (d || 1);
+      // v' = v − 2(v·n)n
+      const dot = b.vx * nx + b.vy * ny;
+      b.vx -= 2 * dot * nx;
+      b.vy -= 2 * dot * ny;
+      b.friendly = true;
+      b.reflected = true;
+      b.ttl = Math.max(b.ttl, 1.1);
+      // Empujar la bala fuera del escudo para no rebotar dos veces
+      b.x = ship.x + nx * (SHIELD_R + 2);
+      b.y = ship.y + ny * (SHIELD_R + 2);
+      explode(b.x, b.y, 3);
+    }
+  }
+  bullets = bullets.filter(b => !b.dead);
+
+  // Bala enemiga vs nave (sin escudo)
   if (ship.invincible <= 0) {
+    for (const b of bullets) {
+      if (b.friendly || b.dead) continue;
+      if (dist(b, ship) < ship.radius + b.radius) {
+        b.dead = true;
+        killShip();
+        break;
+      }
+    }
+    bullets = bullets.filter(b => !b.dead);
+  }
+
+  // Nave vs asteroide / estrella fugaz
+  if (!ship.dead && ship.invincible <= 0) {
     for (const a of asteroids) {
       if (dist(ship, a) < ship.radius + a.radius * 0.82) {
         killShip();
@@ -619,6 +700,8 @@ function update(dt) {
       p.dead = true;
       if (p.type === 'triple') {
         ship.tripleTimer = 5;   // renueva a 5 s si ya estaba activo
+      } else if (p.type === 'shield') {
+        ship.shieldTimer = 6;   // renueva a 6 s si ya estaba activo
       } else {
         ship.speedTimer = 5;    // renueva a 5 s si ya estaba activo
       }
@@ -659,18 +742,27 @@ function drawHUD() {
   ctx.fillText(`SCORE  ${score}`, 14, 26);
 
   // Indicador del power-up velocidad
+  let hudY = 46;
   if (ship.speedTimer > 0) {
     ctx.fillStyle = '#6cf';
-    ctx.fillText(`×2  ${ship.speedTimer.toFixed(1)}s`, 14, 46);
-    ctx.fillStyle = '#fff';
+    ctx.fillText(`×2  ${ship.speedTimer.toFixed(1)}s`, 14, hudY);
+    hudY += 20;
   }
 
   // Indicador del power-up triple shot
   if (ship.tripleTimer > 0) {
     ctx.fillStyle = '#f6a';
-    ctx.fillText(`3×  ${ship.tripleTimer.toFixed(1)}s`, 14, 66);
-    ctx.fillStyle = '#fff';
+    ctx.fillText(`3×  ${ship.tripleTimer.toFixed(1)}s`, 14, hudY);
+    hudY += 20;
   }
+
+  // Indicador del power-up escudo
+  if (ship.shieldTimer > 0) {
+    ctx.fillStyle = '#b6f';
+    ctx.fillText(`ESCUDO  ${ship.shieldTimer.toFixed(1)}s`, 14, hudY);
+    hudY += 20;
+  }
+  ctx.fillStyle = '#fff';
 
   ctx.textAlign = 'center';
   ctx.fillText(`NIVEL ${level}`, W / 2, 26);
