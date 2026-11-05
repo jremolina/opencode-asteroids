@@ -241,6 +241,7 @@ class Ship {
     this.invincible    = 3;
     this.shootCooldown = 0;
     this.speedTimer    = 0;   // power-up velocidad activo (s)
+    this.tripleTimer   = 0;   // power-up triple shot activo (s)
     this.dead          = false;
   }
 
@@ -249,6 +250,7 @@ class Ship {
     if (this.invincible    > 0) this.invincible    -= dt;
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
     if (this.speedTimer    > 0) this.speedTimer    -= dt;
+    if (this.tripleTimer   > 0) this.tripleTimer   -= dt;
 
     const ROT   = 3.5;   // rad/s
     const THRUST = this.speedTimer > 0 ? 520 : 260;  // px/s² (x2 con velocidad)
@@ -275,6 +277,15 @@ class Ship {
     const NOSE = 21;
     const ox = this.x + Math.cos(this.angle) * NOSE;
     const oy = this.y + Math.sin(this.angle) * NOSE;
+    if (this.tripleTimer > 0) {
+      // Abanico ligero: 3 balas en línea recta (centro + ±10°)
+      const SPREAD = 0.175;
+      return [
+        new Bullet(ox, oy, this.angle - SPREAD),
+        new Bullet(ox, oy, this.angle),
+        new Bullet(ox, oy, this.angle + SPREAD),
+      ];
+    }
     return [new Bullet(ox, oy, this.angle)];
   }
 
@@ -348,11 +359,12 @@ class Particle {
   }
 }
 
-// ── Power-up (velocidad) ──────────────────────────────────────────────────────
+// ── Power-ups ─────────────────────────────────────────────────────────────────
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type = 'speed') {
     this.x = x;
     this.y = y;
+    this.type = type;    // 'speed' | 'triple'
     this.radius = 14;
     this.ttl  = 8;    // vida en el mapa (s)
     this.dead = false;
@@ -370,10 +382,11 @@ class PowerUp {
     if (this.ttl < 2 && Math.floor(this.ttl * 8) % 2 === 0) return;
 
     const pulse = 1 + Math.sin(this.phase) * 0.12;
+    const isTriple = this.type === 'triple';
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.scale(pulse, pulse);
-    ctx.strokeStyle = '#6cf';
+    ctx.strokeStyle = isTriple ? '#f6a' : '#6cf';
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
@@ -382,13 +395,33 @@ class PowerUp {
     ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Rayo (chevron »)
-    ctx.beginPath();
-    ctx.moveTo(-4, -7);
-    ctx.lineTo( 3, -1);
-    ctx.lineTo(-1, -1);
-    ctx.lineTo( 4,  7);
-    ctx.stroke();
+    if (isTriple) {
+      // Tres puntos en abanico (triple shot)
+      ctx.fillStyle = '#f6a';
+      const SPREAD = 0.6;  // rad
+      for (let i = -1; i <= 1; i++) {
+        const a = -Math.PI / 2 + i * SPREAD;
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * 6, Math.sin(a) * 6 + 1, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Líneas guía desde el centro
+      ctx.beginPath();
+      for (let i = -1; i <= 1; i++) {
+        const a = -Math.PI / 2 + i * SPREAD;
+        ctx.moveTo(0, 4);
+        ctx.lineTo(Math.cos(a) * 6, Math.sin(a) * 6 + 1);
+      }
+      ctx.stroke();
+    } else {
+      // Rayo (chevron »)
+      ctx.beginPath();
+      ctx.moveTo(-4, -7);
+      ctx.lineTo( 3, -1);
+      ctx.lineTo(-1, -1);
+      ctx.lineTo( 4,  7);
+      ctx.stroke();
+    }
 
     ctx.restore();
   }
@@ -423,7 +456,7 @@ function spawnPowerUp() {
     x = rand(0, W);
     y = rand(0, H);
   } while (dist({ x, y }, ship) < SAFE_DIST);
-  powerUps.push(new PowerUp(x, y));
+  powerUps.push(new PowerUp(x, y, Math.random() < 0.5 ? 'speed' : 'triple'));
 }
 
 function spawnShootingStar() {
@@ -584,7 +617,11 @@ function update(dt) {
   for (const p of powerUps) {
     if (!p.dead && dist(ship, p) < ship.radius + p.radius) {
       p.dead = true;
-      ship.speedTimer = 5;      // renueva a 5 s si ya estaba activo
+      if (p.type === 'triple') {
+        ship.tripleTimer = 5;   // renueva a 5 s si ya estaba activo
+      } else {
+        ship.speedTimer = 5;    // renueva a 5 s si ya estaba activo
+      }
       explode(p.x, p.y, 6);
     }
   }
@@ -625,6 +662,13 @@ function drawHUD() {
   if (ship.speedTimer > 0) {
     ctx.fillStyle = '#6cf';
     ctx.fillText(`×2  ${ship.speedTimer.toFixed(1)}s`, 14, 46);
+    ctx.fillStyle = '#fff';
+  }
+
+  // Indicador del power-up triple shot
+  if (ship.tripleTimer > 0) {
+    ctx.fillStyle = '#f6a';
+    ctx.fillText(`3×  ${ship.tripleTimer.toFixed(1)}s`, 14, 66);
     ctx.fillStyle = '#fff';
   }
 
